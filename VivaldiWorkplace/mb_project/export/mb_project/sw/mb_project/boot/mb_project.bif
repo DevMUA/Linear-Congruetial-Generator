@@ -1,0 +1,6 @@
+/*mb_project*/
+the_ROM_image:
+{
+   <bitstream> 
+   <elf> 
+}

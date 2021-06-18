@@ -1,0 +1,534 @@
+/******************************************************************************
+*
+* Copyright (C) 2009 - 2014 Xilinx, Inc.  All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a copy
+* of this software and associated documentation files (the "Software"), to deal
+* in the Software without restriction, including without limitation the rights
+* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+* copies of the Software, and to permit persons to whom the Software is
+* furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* Use of the Software is limited solely to applications:
+* (a) running on a Xilinx device, or
+* (b) that interact with a Xilinx device through a bus or interconnect.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+* XILINX  BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
+* OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+* SOFTWARE.
+*
+* Except as contained in this notice, the name of the Xilinx shall not be used
+* in advertising or otherwise to promote the sale, use or other dealings in
+* this Software without prior written authorization from Xilinx.
+*
+******************************************************************************/
+
+/*
+ * helloworld.c: simple test application
+ *
+ * This application configures UART 16550 to baud rate 9600.
+ * PS7 UART (Zynq) is not initialized by this application, since
+ * bootrom/bsp configures it to baud rate 115200
+ *
+ * ------------------------------------------------
+ * | UART TYPE   BAUD RATE                        |
+ * ------------------------------------------------
+ *   uartns550   9600
+ *   uartlite    Configurable only in HW design
+ *   ps7_uart    115200 (configured by bootrom/bsp)
+ */
+
+#include <stdio.h>
+#include "xil_printf.h"
+#include "platform.h"
+#include "xparameters.h"
+#include "xgpio_l.h"
+#include "xtmrctr_l.h"
+#include <time.h>
+#include "stdbool.h"
+
+/******************************** Data types *********************************/
+
+// State machine data type
+typedef enum {Loading, SetLimit1, SetLimit2, ShowNumber} TFSMState;
+
+// Buttons GPIO masks
+//CENTER RIGHT DOWN LEFT UP
+#define BUTTON_UP_MASK		0x01
+#define BUTTON_DOWN_MASK	0x04
+#define BUTTON_RIGHT_MASK	0x08
+#define BUTTON_CENTER_MASK	0x10
+
+// Data structure to store buttons status
+typedef struct SButtonStatus
+{
+	bool upPressed;
+	bool downPressed;
+	bool setPressed;
+	bool startPressed;
+
+	bool setPrevious;
+	bool startPrevious;
+} TButtonStatus;
+
+// Data structure to store random number value
+typedef struct SRandomNumber
+{
+	unsigned int firstValue;
+	unsigned int middleValue;
+	unsigned int lastValue;
+	unsigned int limit1FirstValue;
+	unsigned int limit1MiddleValue;
+	unsigned int limit1LastValue;
+	unsigned int limit2FirstValue;
+	unsigned int limit2MiddleValue;
+	unsigned int limit2LastValue;
+	unsigned int DONE;
+	unsigned int limit1;
+	unsigned int limit2;
+	unsigned int CALLEDMODULE;
+} SRandomNumberValue;
+
+/***************************** Helper functions ******************************/
+
+// 7 segment decoder
+unsigned char Hex2Seg(unsigned int value, bool dp) //converts a 4-bit number [0..15] to 7-segments; dp is the decimal point
+{
+	static const char Hex2SegLUT[] = {0x40, 0x79, 0x24, 0x30, 0x19, 0x12, 0x02, 0x78,
+									  0x00, 0x10, 0x08, 0x03, 0x46, 0x21, 0x06, 0x0E, 0x47, 0x4F, 0x3F,0xCE };
+	return dp ? Hex2SegLUT[value] : (0x80 | Hex2SegLUT[value]);
+}
+
+// Rising edge detection and clear
+bool DetectAndClearRisingEdge(bool* pOldValue, bool newValue)
+{
+	bool retValue;
+
+	retValue = (!(*pOldValue)) && newValue; //&& - AND lógico as we work with boolean values
+	*pOldValue = newValue;
+	return retValue;
+}
+
+// Modular increment
+bool ModularInc(unsigned int* pValue, unsigned int modulo)
+{
+	if (*pValue < modulo - 1)
+	{
+		(*pValue)++;
+		return false;
+	}
+	else
+	{
+		*pValue = 0;
+		return true;
+	}
+}
+
+// Modular decrement
+bool ModularDec(unsigned int* pValue, unsigned int modulo)
+{
+	if (*pValue > 0)
+	{
+		(*pValue)--;
+		return false;
+	}
+	else
+	{
+		*pValue = modulo - 1;
+		return true;
+	}
+}
+
+
+// Conversion of the countdown timer values stored in a structure to an array of digits
+void RandomValue2DigitValues(const SRandomNumberValue* randomValue, unsigned int digitValues[8],unsigned char* setFlags)
+{
+	if(*setFlags == 0x1){
+		digitValues[0] = randomValue->limit1LastValue;	//dígito mais à direita
+		digitValues[1] = randomValue->limit1MiddleValue;
+		digitValues[2] = randomValue->limit1FirstValue;
+		digitValues[3] = 0;
+		digitValues[4] = 1;
+		digitValues[5] = 18;
+		digitValues[6] = 17;
+		digitValues[7] = 16;	//dígito mais à esquerda
+	}
+	else if(*setFlags == 0x2){
+		digitValues[0] = randomValue->limit2LastValue;			//dígito mais à direita
+		digitValues[1] = randomValue->limit2MiddleValue;
+		digitValues[2] = randomValue->limit2FirstValue;
+		digitValues[3] = 0;
+		digitValues[4] = 2;
+		digitValues[5] = 18;
+		digitValues[6] = 17;
+		digitValues[7] = 16;	//dígito mais à esquerda
+	}
+	else if(*setFlags == 0x3){
+		digitValues[0] = 0;		//dígito mais à direita
+		digitValues[1] = 0;
+		digitValues[2] = 13;
+		digitValues[3] = 10;
+		digitValues[4] = 0;
+		digitValues[5] = 16;
+		digitValues[6] = 0;
+		digitValues[7] = 0;		//dígito mais à esquerda
+	}
+	else {
+		digitValues[0] = randomValue->lastValue;	//dígito mais à direita
+		digitValues[1] = randomValue->middleValue;
+		digitValues[2] = randomValue->firstValue;
+		digitValues[3] = 0;
+		digitValues[4] = 0;
+		digitValues[5] = 0;
+		digitValues[6] = 0;
+		digitValues[7] = 0;		//dígito mais à esquerda
+	}
+}
+
+/******************* Countdown timer operations functions ********************/
+//all enables come in positive logic, this function has to be invoked at correct frequency (e.g. 800Hz)
+void RefreshDisplays(unsigned char digitEnables, const unsigned int digitValues[8], unsigned char decPtEnables)
+{
+	static unsigned int digitRefreshIdx = 0; // static variable - is preserved across calls
+
+	// Insert your code here...
+	///*** STEP 1
+	unsigned int an = 0x01;
+	an = an << digitRefreshIdx; 	// select the right display to refresh (rotatively)
+	an = an & digitEnables;			// check if the selected display is enabled
+	bool dp = an & decPtEnables;	// check if the selected dot is enabled
+	XGpio_WriteReg(XPAR_AXI_GPIO_DISPLAYS_BASEADDR, XGPIO_DATA_OFFSET, ~an); //an
+	XGpio_WriteReg(XPAR_AXI_GPIO_DISPLAYS_BASEADDR, XGPIO_DATA2_OFFSET, Hex2Seg(digitValues[digitRefreshIdx], dp)); //seg
+
+	digitRefreshIdx++;
+	digitRefreshIdx &= 0x07; // AND bitwise
+}
+
+void ReadButtons(TButtonStatus* pButtonStatus)
+{
+	unsigned int buttonsPattern;
+
+	//buttonsPattern = // Insert your code here...
+	///*** STEP 2
+	buttonsPattern = XGpio_ReadReg(XPAR_AXI_GPIO_BUTTONS_BASEADDR, XGPIO_DATA_OFFSET);
+	pButtonStatus->upPressed    = buttonsPattern & BUTTON_UP_MASK;
+	pButtonStatus->downPressed  = buttonsPattern & BUTTON_DOWN_MASK;
+	pButtonStatus->setPressed   = buttonsPattern & BUTTON_RIGHT_MASK;
+	pButtonStatus->startPressed = buttonsPattern & BUTTON_CENTER_MASK;
+}
+
+void UpdateStateMachine(TFSMState* pFSMState, TButtonStatus* pButtonStatus, bool doneFlag, unsigned char* pSetFlags)
+{
+	switch(*pFSMState){
+	case SetLimit1:
+		*pSetFlags = 0x1;
+		if(DetectAndClearRisingEdge(&(pButtonStatus->setPrevious), pButtonStatus->setPressed)){
+			*pFSMState = SetLimit2;
+		}
+		break;
+	case SetLimit2:
+		*pSetFlags = 0x2;
+			if(DetectAndClearRisingEdge(&(pButtonStatus->setPrevious), pButtonStatus->setPressed)){
+				*pFSMState = Loading;
+			}
+			break;
+	case Loading:
+		*pSetFlags = 0x3;
+		if(doneFlag == 1){
+			*pFSMState = ShowNumber;
+		}
+		break;
+	case ShowNumber:
+		//xil_printf("Show Number");
+		*pSetFlags = 0x4;
+		if(DetectAndClearRisingEdge(&(pButtonStatus->setPrevious), pButtonStatus->setPressed)){
+			*pFSMState = SetLimit1;
+		}
+		break;
+	}
+}
+
+void CallModule(int limit1, int limit2, int seed){
+	if(Xil_In32(XPAR_LNG_0_S00_AXI_BASEADDR+16) != 2){
+		//xil_printf("Called Module");
+	    Xil_Out32(XPAR_LNG_0_S00_AXI_BASEADDR+4,limit1);
+	    Xil_Out32(XPAR_LNG_0_S00_AXI_BASEADDR+8,limit2);
+	    Xil_Out32(XPAR_LNG_0_S00_AXI_BASEADDR+12,seed);
+	    Xil_Out32(XPAR_LNG_0_S00_AXI_BASEADDR+16,2);
+	}
+}
+
+void UpdateLimit(bool limit, SRandomNumberValue* sRandomValue){
+	int tmp = 0;
+	if(limit == 0){
+		tmp = sRandomValue->limit1;
+	}
+	else
+		tmp = sRandomValue->limit2;
+
+	int dig,index = 0;
+	while(tmp > 0){
+		dig = tmp % 10;
+		if(index == 2){
+			if(limit == 0)
+				sRandomValue->limit1FirstValue = dig;
+			else
+				sRandomValue->limit2FirstValue = dig;
+		}
+		else if(index == 1){
+			if(limit == 0)
+				sRandomValue->limit1MiddleValue = dig;
+			else
+				sRandomValue->limit2MiddleValue = dig;
+		}
+		else{
+			if(limit == 0)
+				sRandomValue->limit1LastValue = dig;
+			else
+				sRandomValue->limit2LastValue = dig;
+		}
+
+		tmp = tmp / 10;
+		index++;
+	}
+
+}
+
+void SetLimit(TFSMState fsmState, const TButtonStatus* pButtonStatus, SRandomNumberValue* sRandomValue, unsigned timer)
+{
+	switch(fsmState){
+	case SetLimit1:
+		sRandomValue->DONE = 0;
+		if(pButtonStatus->downPressed){
+			if(sRandomValue->limit1 - 50 < 0){
+				sRandomValue->limit1 = 0;
+			}
+			else
+				sRandomValue->limit1 -= 50;
+			UpdateLimit(0,sRandomValue);
+		}
+		if(pButtonStatus->upPressed){
+			if(sRandomValue->limit1 + 50 > 255){
+				sRandomValue->limit1 = 255;
+			}
+			else
+				sRandomValue->limit1 += 50;
+			UpdateLimit(0,sRandomValue);
+		}
+		if(DetectAndClearRisingEdge(&(pButtonStatus->startPrevious), pButtonStatus->startPressed)){
+			if(sRandomValue->limit1 + 1 > 255){
+				sRandomValue->limit1 = 255;
+			}
+			else
+				sRandomValue->limit1++;
+			UpdateLimit(0,sRandomValue);
+		}
+		break;
+	case SetLimit2:
+		if(pButtonStatus->downPressed){
+			if(sRandomValue->limit2 - 50 < 0){
+				sRandomValue->limit2 = 0;
+			}
+			else
+				sRandomValue->limit2 -= 50;
+			UpdateLimit(1,sRandomValue);
+		}
+		if(pButtonStatus->upPressed){
+			if(sRandomValue->limit2 + 50 > 255){
+				sRandomValue->limit2 = 255;
+			}
+			else
+				sRandomValue->limit2 += 50;
+			UpdateLimit(1,sRandomValue);
+		}
+		if(DetectAndClearRisingEdge(&(pButtonStatus->startPrevious), pButtonStatus->startPressed)){
+			if(sRandomValue->limit2 + 1 > 255){
+				sRandomValue->limit2 = 255;
+			}
+			else
+				sRandomValue->limit2++;
+			UpdateLimit(1,sRandomValue);
+		}
+			break;
+	case Loading:
+		if(sRandomValue->CALLEDMODULE == 0){
+			xil_printf("\n\Seed number %d.\n\r",timer);
+			CallModule(sRandomValue->limit1,sRandomValue->limit2,timer);
+			sRandomValue->CALLEDMODULE = 1;
+		}
+		break;
+	}
+
+}
+
+void CheckIfDoneGenerating(TFSMState fsmState, SRandomNumberValue* sRandomValue)
+{
+
+	if(fsmState == Loading){
+	    if(Xil_In32(XPAR_LNG_0_S00_AXI_BASEADDR+16) == 1){
+	    	int result,dig,index = 0;
+	    	result = Xil_In32(XPAR_LNG_0_S00_AXI_BASEADDR);
+	    	//xil_printf("\n\nRANDOM VALUE GENERATED with value %d", result);
+	    	result = sRandomValue->limit1 + result % sRandomValue->limit2;
+	    	//xil_printf("\n\nRANDOM VALUE BETWEEN LIMIT with value %d", result);
+	    	while(result>0){
+	    		dig = result%10;
+	    		xil_printf("\n\nDIGITe %d", dig);
+	    		if(index == 2)
+	    			sRandomValue->firstValue = dig;
+	    		else if(index == 1)
+	    			sRandomValue->middleValue = dig;
+	    		else
+	    			sRandomValue->lastValue = dig;
+	    		result = result / 10;
+	    		index++;
+	    	}
+	    	sRandomValue->DONE = 1;
+	    	//xil_printf("\n\nRANDOM VALUE GENERATED to %d %d %d",sRandomValue->firstValue, sRandomValue->middleValue,sRandomValue->lastValue);
+	    }
+	}
+
+
+}
+
+/******************************* Main function *******************************/
+
+int main()
+{
+	init_platform();
+	xil_printf("\n\nLNG - polling based version.\nConfiguring..."); //\r is carriage return, and \n is line feed
+
+	//	GPIO tri-state configuration
+	//	Inputs
+	XGpio_WriteReg(XPAR_AXI_GPIO_BUTTONS_BASEADDR,  XGPIO_TRI_OFFSET,  0xFFFFFFFF);
+
+	//	Outputs
+	XGpio_WriteReg(XPAR_AXI_GPIO_DISPLAYS_BASEADDR,  XGPIO_TRI_OFFSET,  0xFFFFFF00);
+	XGpio_WriteReg(XPAR_AXI_GPIO_DISPLAYS_BASEADDR,  XGPIO_TRI2_OFFSET, 0xFFFFFF00);
+
+	xil_printf("\nI/Os configured.");
+
+ 	// Disable hardware timer
+ 	XTmrCtr_SetControlStatusReg(XPAR_AXI_TIMER_0_BASEADDR, 0, 0x00000000);
+	// Set hardware timer load value
+	XTmrCtr_SetLoadReg(XPAR_AXI_TIMER_0_BASEADDR, 0, 125000); // Counter will wrap around every 1.25 ms
+	XTmrCtr_SetControlStatusReg(XPAR_AXI_TIMER_0_BASEADDR, 0, XTC_CSR_LOAD_MASK);
+	// Enable hardware timer, down counting with auto reload
+	XTmrCtr_SetControlStatusReg(XPAR_AXI_TIMER_0_BASEADDR, 0, XTC_CSR_ENABLE_TMR_MASK  |
+															  XTC_CSR_AUTO_RELOAD_MASK |
+															  XTC_CSR_DOWN_COUNT_MASK);
+
+	xil_printf("\n\rHardware timer configured.");
+
+	xil_printf("\n\rSystem running.\n\r");
+
+	// Timer event software counter
+	unsigned hwTmrEventCount = 0;
+
+	TFSMState     fsmState       = SetLimit1;
+	unsigned char setFlags       = 0x0;
+	TButtonStatus buttonStatus   = {false, false, false, false, false, false};
+	SRandomNumberValue   randomNumberValue     = {0, 0, 0, 0, 0, 0, 0 , 0 , 0,  0, 0, 0 ,0};
+	bool          doneFlag       = false;
+
+	unsigned char digitEnables   = 0xFF;
+	unsigned int  digitValues[8] = {0, 0, 9, 5, 9, 5, 0, 0};
+	unsigned char decPtEnables   = 0x00;
+	unsigned int seedHelper = 0;
+
+
+  	while (1)
+  	{
+  		unsigned int tmrCtrlStatReg = XTmrCtr_GetControlStatusReg(XPAR_AXI_TIMER_0_BASEADDR, 0);
+
+  		if (tmrCtrlStatReg & XTC_CSR_INT_OCCURED_MASK)
+		{
+  			// Clear hardware timer event (interrupt request flag)
+			XTmrCtr_SetControlStatusReg(XPAR_AXI_TIMER_0_BASEADDR, 0,
+										tmrCtrlStatReg | XTC_CSR_INT_OCCURED_MASK);
+			hwTmrEventCount++;
+
+			// Put here operations that must be performed at 800Hz rate
+			// Refresh displays
+			RefreshDisplays(digitEnables, digitValues, decPtEnables);
+
+
+			if (hwTmrEventCount % 100 == 0) // 8Hz
+			{
+				seedHelper++;
+				if(seedHelper > 1024){
+					seedHelper = 0;
+					xil_printf("\n\Seed reset.\n\r");
+				}
+				// Put here operations that must be performed at 8Hz rate
+				// Read push buttons
+				ReadButtons(&buttonStatus);
+				// Update state machine
+				//fsmState - current FSM state
+				//buttonStatus - structure holding status of four buttons
+				//zeroFlag - is the current countdown timer value zero?
+				//setFlags - what digit is being set?
+				doneFlag = randomNumberValue.DONE;
+				UpdateStateMachine(&fsmState, &buttonStatus, doneFlag, &setFlags);
+				if (setFlags == 0x0)
+				{
+					digitEnables = 0xFF; // All digits active 0011 1100
+				}
+				else
+				{
+					//digitEnables = (~(setFlags << 2)) & 0x3C; // Setting digit inactive
+				}
+
+				if(setFlags==0x4){
+					randomNumberValue.limit1 = 0;
+					randomNumberValue.limit1FirstValue = 0;
+					randomNumberValue.limit1MiddleValue = 0;
+					randomNumberValue.limit1LastValue = 0;
+					randomNumberValue.limit2 = 0;
+					randomNumberValue.limit2FirstValue = 0;
+					randomNumberValue.limit2MiddleValue = 0;
+					randomNumberValue.limit2LastValue = 0;
+					randomNumberValue.DONE = 0;
+					randomNumberValue.CALLEDMODULE = 0;
+				}
+				if (hwTmrEventCount % 200 == 0) // 4Hz
+				{
+
+
+					if (hwTmrEventCount % 400 == 0) // 2Hz
+					{
+						// Digit set increment/decrement
+						//timerValue - structure holding the current countdown timer value
+						SetLimit(fsmState, &buttonStatus, &randomNumberValue, seedHelper);
+
+						if (hwTmrEventCount == 800) // 1Hz
+						{
+							// Put here operations that must be performed at 1Hz rate
+							// Count down timer normal operation
+							CheckIfDoneGenerating(fsmState, &randomNumberValue);
+
+							// Reset hwTmrEventCount every second
+							hwTmrEventCount = 0;
+						}
+					}
+				}
+			}
+		}
+
+		//digitValues - array holding display digits
+  		RandomValue2DigitValues(&randomNumberValue, digitValues,  &setFlags);
+
+  		// Put here operations that are performed whenever possible
+		///*** STEP 6
+	}
+
+	cleanup_platform();
+	return 0;
+}

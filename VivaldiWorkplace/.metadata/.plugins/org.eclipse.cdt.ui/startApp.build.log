@@ -1,0 +1,44 @@
+01:24:24 **** Incremental Build of configuration Debug for project startApp ****
+make all 
+'Building file: ../src/LNGMain.c'
+'Invoking: MicroBlaze gcc compiler'
+mb-gcc -Wall -O0 -g3 -c -fmessage-length=0 -MT"src/LNGMain.o" -ID:/VivaldiWorkplace/mb_project/export/mb_project/sw/mb_project/standalone_domain/bspinclude/include -mlittle-endian -mcpu=v11.0 -mxl-soft-mul -Wl,--no-relax -ffunction-sections -fdata-sections -MMD -MP -MF"src/LNGMain.d" -MT"src/LNGMain.o" -o "src/LNGMain.o" "../src/LNGMain.c"
+../src/LNGMain.c: In function 'SetLimit':
+../src/LNGMain.c:325:31: warning: passing argument 1 of 'DetectAndClearRisingEdge' discards 'const' qualifier from pointer target type [-Wdiscarded-qualifiers]
+  325 |   if(DetectAndClearRisingEdge(&(pButtonStatus->startPrevious), pButtonStatus->startPressed)){
+      |                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../src/LNGMain.c:110:37: note: expected '_Bool *' but argument is of type 'const _Bool *'
+  110 | bool DetectAndClearRisingEdge(bool* pOldValue, bool newValue)
+      |                                     ^
+../src/LNGMain.c:351:31: warning: passing argument 1 of 'DetectAndClearRisingEdge' discards 'const' qualifier from pointer target type [-Wdiscarded-qualifiers]
+  351 |   if(DetectAndClearRisingEdge(&(pButtonStatus->startPrevious), pButtonStatus->startPressed)){
+      |                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../src/LNGMain.c:110:37: note: expected '_Bool *' but argument is of type 'const _Bool *'
+  110 | bool DetectAndClearRisingEdge(bool* pOldValue, bool newValue)
+      |                                     ^
+../src/LNGMain.c:362:15: warning: unknown escape sequence: '\S'
+  362 |    xil_printf("\n\Seed number %d.\n\r",timer);
+      |               ^~~~~~~~~~~~~~~~~~~~~~~~
+../src/LNGMain.c:306:2: warning: enumeration value 'ShowNumber' not handled in switch [-Wswitch]
+  306 |  switch(fsmState){
+      |  ^~~~~~
+../src/LNGMain.c: In function 'main':
+../src/LNGMain.c:468:17: warning: unknown escape sequence: '\S'
+  468 |      xil_printf("\n\Seed reset.\n\r");
+      |                 ^~~~~~~~~~~~~~~~~~~~
+'Finished building: ../src/LNGMain.c'
+' '
+'Building target: startApp.elf'
+'Invoking: MicroBlaze gcc linker'
+mb-gcc -Wl,-T -Wl,../src/lscript.ld -LD:/VivaldiWorkplace/mb_project/export/mb_project/sw/mb_project/standalone_domain/bsplib/lib -mlittle-endian -mcpu=v11.0 -mxl-soft-mul -Wl,--no-relax -Wl,--gc-sections -o "startApp.elf"  ./src/LNGMain.o ./src/helloworld.o ./src/platform.o   -Wl,--start-group,-lxil,-lgcc,-lc,--end-group
+'Finished building target: startApp.elf'
+' '
+'Invoking: MicroBlaze Print Size'
+mb-size startApp.elf  |tee "startApp.elf.size"
+   text	   data	    bss	    dec	    hex	filename
+  11544	    352	   3112	  15008	   3aa0	startApp.elf
+'Finished building: startApp.elf.size'
+' '
+
+01:24:24 Build Finished (took 474ms)
+
